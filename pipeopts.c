@@ -31,7 +31,7 @@ struct optgroup {
   /* getopts formatted option string for group */
   char optstr[MAX_OPTDEF];
 
-  /* options group */
+  /* option string for group */
   char options[MAX_OPTION];
 };
 
@@ -159,7 +159,7 @@ static int process_options(pipeopts *opts, WORD_LIST *list)
   return 0;
 }
 
-int export_options(const pipeopts* opts)
+static int export_options(const pipeopts* opts)
 {
   int i;
   SHELL_VAR *pipeopts_v;
