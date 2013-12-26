@@ -20,6 +20,10 @@ Getopts for process pipelines
 <!-- For those not wanting to dick around with building a Bash builtin (or for those not using Bash)
  there is `pipeopts.pl` -->
 
+## Etc...
+
+Internal Bash functions, useful when writing loadable builtins: https://gist.github.com/sshaw/8017032
+
 
 
 
