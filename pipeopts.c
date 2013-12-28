@@ -1,8 +1,3 @@
-#include <config.h>
-
-#if defined (HAVE_UNISTD_H)
-#  include <unistd.h>
-#endif
 #include "bashansi.h"
 #include <stdio.h>
 #include <errno.h>
