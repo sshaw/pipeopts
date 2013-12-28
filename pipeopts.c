@@ -46,12 +46,6 @@ typedef struct pipeopts {
   struct optgroup optgroup[MAX_OPTGROUPS];
 } pipeopts;
 
-static int strappend(char *var, int pos, int max, const char *str)
-{
-  int len = snprintf(var + pos, max - pos, "%s", str);
-  return len >= max - pos ? -1 : len;
-}
-
 static int init_pipeopts(pipeopts* opts, const char* optdef)
 {
   char *part, *p;
