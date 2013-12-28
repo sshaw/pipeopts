@@ -17,15 +17,16 @@
 extern int errno;
 #endif
 
-extern char *this_command_name;
-extern char *strerror();
-
 #define MAX_OPTDEF    256
 #define MAX_OPTION    2048
 #define MAX_OPTGROUPS 16
 
+/* message stolen from pathchk.c */
+#define length_error(opt, len, max) builtin_error("name `%s' has length %d; exceeds limit of %d", opt, len, max - 1)
+
 const char *optsep = "|";
-char *shellvar = "PIPEOPTS";
+char *shellvar_opts = "PIPEOPTS";
+char *shellvar_args = "PIPEOPTSARG";
 
 struct optgroup {
   /* getopts formatted option string for group */
@@ -42,7 +43,6 @@ typedef struct pipeopts {
   /* getopts formatted option string */
   char optstr[MAX_OPTDEF];
 
-  // TODO: array here?
   /* leftover arguments */
   char optarg[MAX_OPTION];
 
@@ -51,22 +51,32 @@ typedef struct pipeopts {
   struct optgroup optgroup[MAX_OPTGROUPS];
 } pipeopts;
 
-/* TODO: error checking */
+static int strappend(char *var, int pos, int max, const char *str)
+{
+  int len = snprintf(var + pos, max - pos, "%s", str);
+  return len >= max - pos ? -1 : len;
+}
+
 static int init_pipeopts(pipeopts* opts, const char* optdef)
 {
   char *part, *p;
   char tmp[MAX_OPTDEF];
   int len, count = 0;
 
+  len = strlen(optdef);
+  if(len > MAX_OPTDEF) {
+    length_error("option definition", len, MAX_OPTDEF);
+    return -1;
+  }
+
   strncpy(opts->optdef, optdef, MAX_OPTDEF);
   strncpy(tmp, optdef, MAX_OPTDEF);
 
   p = tmp;
+  len = 0;
   while((part = strsep(&p, optsep)) != NULL) {
-    strncpy(opts->optgroup[count++].optstr, part, MAX_OPTDEF - 1);
-
-    len = strnlen(opts->optstr, MAX_OPTDEF);
-    strncat(opts->optstr, part, MAX_OPTDEF - len - 1);
+    strncpy(opts->optgroup[count++].optstr, part, MAX_OPTDEF);
+    len += snprintf(opts->optstr + len, MAX_OPTDEF - len, "%s", part);
   }
 
   opts->optgroup_count = count;
@@ -76,7 +86,7 @@ static int init_pipeopts(pipeopts* opts, const char* optdef)
 
 static int validate_pipeopts(pipeopts *opts)
 {
-  char *p;
+  char *p, *opt;
   int i, j, count = opts->optgroup_count;
 
   if(count == 0) {
@@ -90,7 +100,7 @@ static int validate_pipeopts(pipeopts *opts)
     j = strlen(p);
     if(!j || index(p, ' ') != NULL) {
       if(!j)
-        builtin_error("option string in group %s is empty", i);
+        builtin_error("option string in group %d is empty", i);
       else
         builtin_error("option string contains a space: `%s'", p);
 
@@ -100,12 +110,11 @@ static int validate_pipeopts(pipeopts *opts)
 
   for(i = 0; i < count - 1; i++) {
     for(j = i + 1; j < count; j++) {
-      char *x;
       p = opts->optgroup[j].optstr;
-      while((x = strpbrk(p, opts->optgroup[i].optstr)) != NULL) {
+      while((opt = strpbrk(p, opts->optgroup[i].optstr)) != NULL) {
 
-        if(*x != ':') {
-          builtin_error("duplicate option `%c' in group %d", *x, j);
+        if(*opt != ':') {
+          builtin_error("duplicate option `%c' in group %d", *opt, j);
           return -1;
         }
 
@@ -119,25 +128,40 @@ static int validate_pipeopts(pipeopts *opts)
 
 static int optstr_append(char *options, int opt, const char *optarg)
 {
-  int pos = 0, len = strnlen(options, MAX_OPTION);
+  int n, len = strnlen(options, MAX_OPTION);
+  char *fmt;
 
-  /* TODO: max len */
+  /* space + switch + NULL */
+  if(len + 4 > MAX_OPTION) {
+    length_error("an option", n, MAX_OPTION);
+    return -1;
+  }
+
   if(len > 0)
     options[len++] = ' ';
 
   options[len++] = '-';
   options[len++] = opt;
+  options[len] = '\0';
 
-  /* TODO: optarg should be quoted */
-  if(optarg)
-    strncat(options, optarg, MAX_OPTION - len - 1);
+  if(optarg) {
+    /* maybe just always quote? */
+    fmt = index(optarg, ' ') != NULL ? "'%s'" : "%s";
+    n = snprintf(options + len, MAX_OPTION - len, fmt, optarg);
+
+    if(n >= MAX_OPTION - len) {
+      length_error("an option", n, MAX_OPTION);
+      return -1;
+    }
+  }
 
   return 0;
 }
 
 static int process_options(pipeopts *opts, WORD_LIST *list)
 {
-  int pos, opt;
+  char *fmt;
+  int pos, opt, n, len = 0;
 
   reset_internal_getopt();
   while((opt = internal_getopt(list, opts->optstr)) != -1) {
@@ -154,7 +178,19 @@ static int process_options(pipeopts *opts, WORD_LIST *list)
     }
   }
 
-  // loptend // last non-option in the list
+  for(list = loptend; list; list = list->next) {
+    n  = snprintf(opts->optarg + len,
+                  MAX_OPTION - len,
+                  list->next ? "%s " : "%s",
+                  list->word->word);
+    if(n >= MAX_OPTION - len) {
+      /* TODO: quote */
+      length_error("PIPEOPTSARG", n, MAX_OPTION);
+      return -1;
+    }
+
+    len += n;
+  }
 
   return 0;
 }
@@ -165,11 +201,13 @@ static int export_options(const pipeopts* opts)
   SHELL_VAR *pipeopts_v;
   ARRAY *pipeopts_a;
 
-  unbind_variable(shellvar);
-  pipeopts_v = make_new_array_variable(shellvar);
+  unbind_variable(shellvar_opts);
+  unbind_variable(shellvar_args);
+
+  pipeopts_v = make_new_array_variable(shellvar_opts);
   if(!array_p(pipeopts_v)) {
     /* errorno used here? */
-    builtin_error("cannot create shell variable %s", shellvar);
+    builtin_error("cannot create shell variable %s", shellvar_opts);
     return -1;
   }
 
@@ -177,6 +215,8 @@ static int export_options(const pipeopts* opts)
 
   for(i = opts->optgroup_count -1; i >= 0; i--)
     array_push(pipeopts_a, opts->optgroup[i].options);
+
+  (void*)bind_variable(shellvar_args, opts->optarg, 0);
 
   return 0;
 }
@@ -212,6 +252,7 @@ pipeopts_builtin (list)
   printf("optstr: %s\n", opts.optstr);
   for(i = 0; i < opts.optgroup_count; i++)
     printf("group %d: %s = %s\n", i, opts.optgroup[i].optstr, opts.optgroup[i].options);
+  printf("optarg: %s\n", opts.optarg);
 #endif
 
   if(export_options(&opts) < 0)
@@ -227,6 +268,8 @@ char *pipeopts_doc[] = {
         "argument string against each ARG, putting the",
         "parsed result into its corresponding position",
         "in the shell array variable PIPEOPTS.",
+        "Remaining argument are concatinated and placed",
+        "into PIPEOPTSARG.",
         (char *)NULL
 };
 
